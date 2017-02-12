@@ -37,12 +37,12 @@ class ArmedBandit:
         self.num_arms = num_arms
         self.init_value = init_value
         self.epsilon = epsilon
-	self.stepSize = stepSize
+	self.stepSize = tf.constant(stepSize)
         self.sampleAverage = sampleAverage
 	self.softmax = softmax
 	self.sess = session
-	self.epoch = 0
-	self.meanReward = 0
+	self.epoch = tf.constant(0,tf.float32)
+	self.meanReward = tf.constant(0.0, tf.float32)
 	self.actionCount = [0]*self.num_arms
 	
 	idx = str(idx)+str(epsilon)+str(stepSize)+str(sampleAverage)+str(softmax)
@@ -65,39 +65,41 @@ class ArmedBandit:
 	## 1.exploration
 	if self.epsilon > 0:
 	    if np.random.binomial(1, self.epsilon) == 1:
-	        return tf.random_shuffle(self.armsIndex)
+	        return tf.gather(tf.random_shuffle(self.armsIndex),0)
 	## 2.softmax exploration
 	if self.softmax:
 	    self.softmaxProb = tf.nn.softmax(self.estimatedValue) 
 	    samples = tf.multinomial(tf.reshape(self.softmaxProb,[1,-1]), self.num_arms) 
 	    samples = tf.cast(samples, tf.int32)
 	    samples = tf.reshape(samples, [self.num_arms])
-	    return samples
-	return tf.reshape(tf.argmax(self.estimatedValue, axis=0),[1]) 
+	    return tf.gather(samples,0)
+	return tf.gather(tf.reshape(tf.argmax(self.estimatedValue, axis=0),[1]),0) 
 
     def takeBestAction(self, action):
 	# reward is generated with a random added by true value
-	rand_reward = np.random.rand()
-	reward = rand_reward + self.trueValue.eval()[action]
-	self.epoch += 1
-	self.meanReward = (self.epoch-1.0)/self.epoch*self.meanReward + reward/self.epoch
+	rand_reward = tf.constant(np.random.rand())
+	reward = tf.add(rand_reward, tf.gather(self.trueValue, action))
+	self.epoch = self.epoch+1
+	self.meanReward = (self.epoch-1)*self.meanReward/self.epoch + reward/self.epoch
 	self.actionCount[action] += 1
+
         c_action = tf.constant([action])
 	
 	if self.sampleAverage:
-	    c_new = tf.constant([1.0/self.actionCount[action]*(reward-self.estimatedValue.eval()[action])])
+	    c_new = [1.0/self.actionCount[action]*(reward-tf.gather(self.estimatedValue, action))]
             self.estimatedValue = tf.scatter_add(self.estimatedValue, c_action, c_new)
 
 	elif self.softmax:
 	    ones = [0.0]*self.num_arms
 	    ones[action] = 1.0
-	    ones = ones - self.softmaxProb.eval()
-	    c_new = tf.constant(self.stepSize*(reward-self.meanReward)*ones,dtype=tf.float32)
+	    ones = tf.constant(ones)
+	    ones = ones - self.softmaxProb
+	    c_new = self.stepSize*(reward-self.meanReward)*ones
 	    c_index = tf.constant(range(10))
             self.estimatedValue = tf.scatter_add(self.estimatedValue, c_index, c_new)
 	    
 	else:
-	    c_new = tf.constant([self.stepSize*(reward-self.estimatedValue.eval()[action])]) 
+	    c_new = [self.stepSize*(reward-tf.gather(self.estimatedValue, action))] 
             self.estimatedValue = tf.scatter_add(self.estimatedValue, c_action, c_new)
 	    
 	return reward
@@ -106,7 +108,7 @@ if __name__ == '__main__':
     with tf.Session() as sess:
 	bandits = []
 	nbandit = 20
-	times = 100
+	times = 30
 	epsilon = [0, 0.01, 0.1, 0.15]
 	for eps in epsilon:
 	    bandit = [
@@ -122,11 +124,11 @@ if __name__ == '__main__':
 	for ind, bandit in enumerate(bandits):
 	    for i in range(nbandit):
 		for t in range(times):
-		    action = bandit[i].getBestAction().eval()[0]
-		    reward = bandit[i].takeBestAction(action)
+		    action = sess.run(bandit[i].getBestAction())
+		    reward = sess.run(bandit[i].takeBestAction(action))
 		    print action, reward
 		    ave_rewards[ind][t] += reward
-		    if action == bandit[i].bestAction.eval():
+		    if action == sess.run(bandit[i].bestAction):
 			best_actions[ind][t] += 1
 	    best_actions[ind] /= nbandit
 	    ave_rewards[ind] /= nbandit
@@ -134,5 +136,5 @@ if __name__ == '__main__':
 	for eps, ba in zip(epsilon, best_actions):
 	    plt.plot(ba, label='epsilon='+str(eps))
 	plt.xlabel('steps')
-	plt.ylabel('best action')
+	plt.ylabel('optimal action %')
 	plt.show()
