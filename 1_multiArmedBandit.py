@@ -107,9 +107,9 @@ class ArmedBandit:
 if __name__ == '__main__':
     with tf.Session() as sess:
 	bandits = []
-	nbandit = 20
-	times = 30
-	epsilon = [0, 0.01, 0.1, 0.15]
+	nbandit = 5
+	times = 400
+	epsilon = [0, 0.05, 0.1, 0.15]
 	for eps in epsilon:
 	    bandit = [
                        ArmedBandit(10, sess, idx=idx, epsilon=eps, sampleAverage=True, softmax=False) \
@@ -137,4 +137,12 @@ if __name__ == '__main__':
 	    plt.plot(ba, label='epsilon='+str(eps))
 	plt.xlabel('steps')
 	plt.ylabel('optimal action %')
+	plt.legend()
+	plt.show()
+
+	for eps, ar in zip(epsilon, ave_rewards):
+	    plt.plot(ar, label='epsilon='+str(eps))
+	plt.xlabel('steps')
+	plt.ylabel('average reward')
+	plt.legend()
 	plt.show()
