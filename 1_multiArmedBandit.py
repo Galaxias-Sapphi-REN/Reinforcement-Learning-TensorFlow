@@ -90,47 +90,41 @@ class ArmedBandit:
 
     def takeBestAction(self, action):
 	# reward is generated with a random added by true value
-	action = action.eval()
-	rand_reward = tf.constant(np.random.rand())
-	reward = tf.add(rand_reward, tf.gather(self.trueValue, action))
+	#rand_reward = tf.constant(np.random.rand())
+	reward = tf.gather(self.trueValue, action)+np.random.rand()
+	#reward = tf.add(rand_reward, tf.gather(self.trueValue, action))
 	self.epoch = self.epoch+1
 	self.meanReward = (self.epoch-1)*self.meanReward/self.epoch + reward/self.epoch
-	self.actionCount[action] += 1
 
-        c_action = tf.constant([action])
 	
 	if self.sampleAverage:
-	    c_new = [1.0/self.actionCount[action]*(reward-tf.gather(self.estimatedValue, action))]
-            self.estimatedValue = tf.scatter_add(self.estimatedValue, c_action, c_new)
+	    c_new = [1.0/(self.actionCount[action.eval()]+1)*(reward-tf.gather(self.estimatedValue, action))]
+            self.estimatedValue = tf.scatter_add(self.estimatedValue, [action], c_new)
 
 	elif self.softmax:
 	    ones = [0.0]*self.num_arms
-	    ones[action] = 1.0
+	    ones[action.eval()] = 1.0
 	    ones = tf.constant(ones)
 	    ones = ones - self.softmaxProb
 	    c_new = self.stepSize*(reward-self.meanReward)*ones
-	    c_index = tf.constant(range(10))
-            self.estimatedValue = tf.scatter_add(self.estimatedValue, c_index, c_new)
+            self.estimatedValue = tf.scatter_add(self.estimatedValue, self.armsIndex, c_new)
 	    
 	else:
 	    c_new = [self.stepSize*(reward-tf.gather(self.estimatedValue, action))] 
-            self.estimatedValue = tf.scatter_add(self.estimatedValue, c_action, c_new)
+            self.estimatedValue = tf.scatter_add(self.estimatedValue, [action], c_new)
+	
+	self.actionCount[action.eval()] += 1
 	    
 	return reward
     
 if __name__ == '__main__':
     with tf.Session() as sess:
 	bandits = []
-	nbandit = 10
-	times = 100
-	epsilon = [0.05, 0.1, 0.15]
+	nbandit = 5
+	times = 40
+	epsilon = [0, 0.05, 0.1, 0.15]
 	for eps in epsilon:
-	    bandit = [
-                       ArmedBandit(10, sess, idx=idx, epsilon=eps, sampleAverage=True, softmax=False) \
-		       for idx in range(nbandit) \
-		     ]
-	    #for ab in bandit:
-        	#sess.run(ab.initial_op)
+	    bandit = [ArmedBandit(10, sess, idx=idx, epsilon=eps, sampleAverage=True, softmax=False) for idx in range(nbandit)]
 	    bandits.append(bandit)
 	
 	ave_rewards = [np.zeros(times, dtype='float') for _ in range(len(epsilon))]
@@ -140,29 +134,25 @@ if __name__ == '__main__':
 
 	t_start = time.time()
 	for ind, bandit in enumerate(bandits):
-	    for i in range(nbandit):
-		for t in range(times):
+	    for t in range(times):
+		action = tf.constant(0.)
+		reward = tf.constant(0.)
+	        for i in range(nbandit):
 		    t1 = time.time()
-		    action = bandit[i].getBestAction()
-		    t2 = time.time()
-		    reward = bandit[i].takeBestAction(action)
-		    t3 = time.time()
-		    #queue_rewards.enqueue([reward]) 
-		    ave_rewards[ind][t] += reward.eval()
-		    t4 = time.time()
+		    act = bandit[i].getBestAction()
 		    optimal = tf.equal(tf.cast(action,tf.int32),bandit[i].bestAction)
-		    optimal = tf.cast(optimal,tf.int32)
-		    #queue_actions.enqueue([optimal])
-		    best_actions[ind][t] += optimal.eval()
-		    t5 = time.time()
+		    optimal = tf.cast(optimal,tf.float32)
+		    action += optimal
+
+		    t2 = time.time()
+		    reward += bandit[i].takeBestAction(act)
+		    t3 = time.time()
 		    print 't2-t1',t2-t1
 		    print 't3-t2',t3-t2
-		    print 't4-t3',t4-t3
-		    print 't5-t4',t5-t4
+		ave_rewards[ind][t] = reward.eval()
+		best_actions[ind][t] = action.eval()
 	    best_actions[ind] /= nbandit
 	    ave_rewards[ind] /= nbandit
-	    
-
 	t_end = time.time()
 	print 'consume time:',t_end-t_start
 		    
