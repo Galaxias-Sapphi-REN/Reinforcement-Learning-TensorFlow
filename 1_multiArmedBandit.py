@@ -24,138 +24,138 @@ import numpy as np
 import matplotlib.pyplot as plt
 import time
 
-def subset_update(old_tensor, ind, new, mode='update', scope=None):
-    ''' update subset of a tensor by numpy style indexing '''
-    indice = tf.constant(ind)
-    scope = scope if scope is not None else 'subset_update'
-    updated = tf.get_variable(scope+'/newvalue', shape=len(new), initializer=tf.constant_initializer(new))
-    if mode == 'update':
-        new_tensor = tf.scatter_update(old_tensor, indice, updated)
-    elif mode == 'add':
-        new_tensor = tf.scatter_add(old_tensor, indice, updated)
-    elif mode == 'sub':
-        new_tensor = tf.scatter_sub(old_tensor, indice, updated)
-    else:
-	raise NotImplementedError('wrong mode %s' % mode)
-    return new_tensor
+## 问题回顾，一共十个arm，一共n个bandit，一共t次实验，并且分成多个epsilon来实验
+#每个bandit的每个arm都有一个真实价值,并且单个bandit的价值是服从稳定的分布
+#每个bandit都有一个best action, epoch, meanReward, actionCount
+#一共有nbandit*epsilon*times个随机数与epsilon进行比较
+config = tf.ConfigProto(graph_options=tf.GraphOptions(optimizer_options=tf.OptimizerOptions(opt_level=tf.OptimizerOptions.L0)))
+tf.reset_default_graph()
+
+epsilons = tf.Variable([0, 0.05, 0.15, 0.20])
+epsilon = 4
+times = 5
+nbandit = 5
+arms = 10
+stepSize = 0.1
+softmax = True
+sampleAverage = True
+
+
+all_random_numbers = tf.get_variable('all_random_numbers', shape=[epsilon, times, nbandit], initializer=tf.random_uniform_initializer(), dtype=tf.float32)
+all_true_value = tf.get_variable('all_true_value', shape=[epsilon, nbandit, arms], initializer=tf.random_normal_initializer(), dtype=tf.float32)
+all_best_action = tf.cast(tf.argmax(all_true_value, axis=2), tf.int32)
+all_arms = tf.get_variable('all_arms', shape=[arms], initializer=tf.constant_initializer(range(arms)), dtype=tf.int32)
+rand = tf.get_variable('rand', shape=[epsilon, nbandit, times], initializer=tf.random_normal_initializer(), dtype=tf.float32)
+
+
+with tf.variable_scope('all'):
+    epoch = tf.get_variable('epoch', shape=[epsilon*nbandit], initializer=tf.zeros_initializer(), dtype=tf.int32)
+    mean_reward = tf.get_variable('mean_reward', shape=[epsilon*nbandit], initializer=tf.zeros_initializer(), dtype=tf.float32)
+    action_count = tf.get_variable('action_count', shape=[epsilon*nbandit*arms], initializer=tf.zeros_initializer(), dtype=tf.float32)
+    estimated_value = tf.get_variable('estimated_value', shape=[epsilon*nbandit*arms], initializer=tf.constant_initializer(1.), dtype=tf.float32)
+
+with tf.variable_scope('result'):
+    final_reward = tf.get_variable('final_reward', shape=[epsilon*nbandit*times], initializer=tf.zeros_initializer(), dtype=tf.float32)
+    final_optimal = tf.get_variable('final_optimal', shape=[epsilon*nbandit*times], initializer=tf.zeros_initializer(), dtype=tf.float32)
     
+sess = tf.Session(config=config)
 
-class ArmedBandit:
-    def __init__(self, num_arms, session, idx, 
-		 init_value = 1.,
-		 epsilon = 0.1,
-		 stepSize = 0.1,
-		 sampleAverage = True, 
-		 softmax = True):
-        self.num_arms = num_arms
-        self.init_value = init_value
-        self.epsilon = epsilon
-	self.stepSize = tf.constant(stepSize)
-        self.sampleAverage = sampleAverage
-	self.softmax = softmax
-	self.sess = session
-	self.epoch = tf.constant(0,tf.float32)
-	self.meanReward = tf.constant(0.0, tf.float32)
-	self.actionCount = [0]*self.num_arms
-	
-	idx = str(idx)+str(epsilon)+str(stepSize)+str(sampleAverage)+str(softmax)
+i1 = tf.Variable(range(epsilon),tf.int32)
+i2 = tf.Variable(range(nbandit),tf.int32)
+i3 = tf.Variable(range(times),tf.int32)
 
-        self.armsIndex = tf.get_variable(str(idx)+'/armsIndex', shape=[self.num_arms], initializer=tf.constant_initializer(np.arange(self.num_arms)), dtype=tf.int32)
+def policy(index_epsilon, index_nbandit, index_time):
+    # 1.get action
 
-        self.estimatedValue = tf.get_variable(str(idx)+'/estimatedValue', shape=[self.num_arms], initializer=tf.constant_initializer([self.init_value]*self.num_arms), dtype=tf.float32)
+    index1 = index_epsilon*(index_nbandit*index_time)+index_nbandit*index_time+index_time
 
-        self.trueValue = tf.get_variable(str(idx)+'/trueValue', shape=[self.num_arms], initializer=tf.random_normal_initializer(), dtype=tf.float32)
+    index2 = index_epsilon*index_nbandit+index_nbandit
+    def action_explore():
+	return tf.gather_nd(tf.random_shuffle(all_arms),[0])
 
-	self.bestAction = tf.cast(tf.argmax(self.trueValue, axis=0),tf.int32)
+    def softmax_or_not():
+	with tf.variable_scope('all', reuse=True):
+            if softmax:
+    	        estimated_value = tf.get_variable('estimated_value', dtype=tf.float32)
+	        estimated_value = tf.reshape(estimated_value, [epsilon, nbandit, arms])
+	        softmax_prob = tf.nn.softmax(tf.gather_nd(estimated_value, [index_epsilon, index_nbandit]))
+                samples = tf.multinomial(tf.reshape(softmax_prob,[1,-1]), arms) 
+                samples = tf.cast(samples, tf.int32)
+                samples = tf.reshape(samples, [arms])
+                return tf.gather_nd(samples,[0])
+            else:
+	        return tf.argmax(tf.gather_nd(estimated_value, [index_epsilon, index_nbandit]),axis=0) 
 
-        #self.value_estimated = subset_update(self.value_estimated, [0,1,2], [1,3,5], mode='sub', scope='init')
+    random = tf.gather_nd(all_random_numbers, [index_epsilon, index_time, index_nbandit]) 
+    eps = tf.gather_nd(epsilons, [index_epsilon])
+    explore_or_not = tf.less(random, eps)
+    action = tf.cond(explore_or_not, action_explore, softmax_or_not) 
 
-        #self.initial_op = tf.global_variables_initializer()
+    best_action = tf.gather_nd(all_best_action, [index_epsilon, index_nbandit])
 
-    def getBestAction(self):
-	# return the shuffled array
+    optimal = tf.equal(action, best_action)
 
-	## 1.exploration
-	if self.epsilon > 0:
-	    if np.random.binomial(1, self.epsilon) == 1:
-	        return tf.gather(tf.random_shuffle(self.armsIndex),0)
-	## 2.softmax exploration
-	if self.softmax:
-	    self.softmaxProb = tf.nn.softmax(self.estimatedValue) 
-	    samples = tf.multinomial(tf.reshape(self.softmaxProb,[1,-1]), self.num_arms) 
-	    samples = tf.cast(samples, tf.int32)
-	    samples = tf.reshape(samples, [self.num_arms])
-	    return tf.gather(samples,0)
-	return tf.gather(tf.reshape(tf.argmax(self.estimatedValue, axis=0),[1]),0) 
+    index3 = index_epsilon*(index_nbandit*action)+index_nbandit*action+action
 
-    def takeBestAction(self, action):
-	# reward is generated with a random added by true value
-	#rand_reward = tf.constant(np.random.rand())
-	reward = tf.gather(self.trueValue, action)+np.random.rand()
-	#reward = tf.add(rand_reward, tf.gather(self.trueValue, action))
-	self.epoch = self.epoch+1
-	self.meanReward = (self.epoch-1)*self.meanReward/self.epoch + reward/self.epoch
+    with tf.variable_scope('all', reuse=True):
+    	estimated_value = tf.get_variable('estimated_value', dtype=tf.float32)
+        estimated_value = tf.reshape(estimated_value, [epsilon*nbandit*arms])
 
-	
-	if self.sampleAverage:
-	    c_new = [1.0/(self.actionCount[action.eval()]+1)*(reward-tf.gather(self.estimatedValue, action))]
-            self.estimatedValue = tf.scatter_add(self.estimatedValue, [action], c_new)
+    # 2.get reward
+    reward = tf.gather_nd(all_true_value, [index_epsilon, index_nbandit, action])+tf.gather_nd(rand, [index_epsilon, index_nbandit, index_time])
+    with tf.variable_scope('all', reuse=True):
+        epoch = tf.get_variable('epoch', dtype=tf.int32)
+        mean_reward = tf.get_variable('mean_reward', dtype=tf.float32)
+        action_count = tf.get_variable('action_count', dtype=tf.float32)
 
-	elif self.softmax:
-	    ones = [0.0]*self.num_arms
-	    ones[action.eval()] = 1.0
-	    ones = tf.constant(ones)
-	    ones = ones - self.softmaxProb
-	    c_new = self.stepSize*(reward-self.meanReward)*ones
-            self.estimatedValue = tf.scatter_add(self.estimatedValue, self.armsIndex, c_new)
-	    
+        epoch = tf.scatter_add(epoch, index_epsilon*nbandit+index_nbandit, 1)
+	tmp_epoch = tf.gather_nd(epoch, [index_epsilon*nbandit+index_nbandit])
+	tmp_epoch = tf.to_float(tmp_epoch)
+	tmp_mean_reward = tf.gather_nd(mean_reward, [index_epsilon*nbandit+index_nbandit])
+	tmp_mean_reward = (tmp_epoch-1)*tmp_mean_reward/tmp_epoch + reward/tmp_epoch
+	mean_reward = tf.scatter_update(mean_reward, index_epsilon*nbandit+index_nbandit, tmp_mean_reward)
+
+    with tf.variable_scope('all', reuse=True):
+    	action_count = tf.get_variable('action_count', dtype=tf.float32)
+    	estimated_value = tf.get_variable('estimated_value', dtype=tf.float32)
+	tmp_ev = tf.gather_nd(estimated_value, [index3])
+    	if sampleAverage:
+	    tmp_ac = tf.gather_nd(action_count, [index3])
+	    value = 1.0/(tmp_ac+1)*(reward-tmp_ev)
 	else:
-	    c_new = [self.stepSize*(reward-tf.gather(self.estimatedValue, action))] 
-            self.estimatedValue = tf.scatter_add(self.estimatedValue, [action], c_new)
-	
-	self.actionCount[action.eval()] += 1
+	    value = stepSize*(reward-tmp_ev) 
+	estimated_value = tf.scatter_add(estimated_value, index3, value)
+	action_count = tf.scatter_add(action_count, index3, 1)
 	    
-	return reward
-    
-if __name__ == '__main__':
-    with tf.Session() as sess:
-	bandits = []
-	nbandit = 5
-	times = 40
-	epsilon = [0, 0.05, 0.1, 0.15]
-	for eps in epsilon:
-	    bandit = [ArmedBandit(10, sess, idx=idx, epsilon=eps, sampleAverage=True, softmax=False) for idx in range(nbandit)]
-	    bandits.append(bandit)
+    with tf.variable_scope('result', reuse=True):
+        final_reward = tf.get_variable('final_reward', dtype=tf.float32)
+        final_optimal = tf.get_variable('final_optimal', dtype=tf.float32)
+	final_reward = tf.scatter_update(final_reward, index1, reward)
+	final_optimal = tf.scatter_update(final_optimal, index1, tf.cast(optimal, tf.float32))
+    return final_reward, final_optimal 
+
+sess.run(tf.global_variables_initializer())
+t1 = time.time()
+ind = 0
+for i in range(epsilon):
+    for j in range(nbandit):
+        for k in range(times):
+	    fr, fo = policy(tf.gather(i1,i),tf.gather(i2,j),tf.gather(i3,k))
+	    ind +=1
+	    
+t2 = time.time()
+print sess.run(fr)
+print sess.run(fo)
+print t2-t1
+	    
+
+
+
+
+
 	
-	ave_rewards = [np.zeros(times, dtype='float') for _ in range(len(epsilon))]
-	best_actions = [np.zeros(times, dtype='float') for _ in range(len(epsilon))]
-
-        sess.run(tf.global_variables_initializer())
-
-	t_start = time.time()
-	for ind, bandit in enumerate(bandits):
-	    for t in range(times):
-		action = tf.constant(0.)
-		reward = tf.constant(0.)
-	        for i in range(nbandit):
-		    t1 = time.time()
-		    act = bandit[i].getBestAction()
-		    optimal = tf.equal(tf.cast(action,tf.int32),bandit[i].bestAction)
-		    optimal = tf.cast(optimal,tf.float32)
-		    action += optimal
-
-		    t2 = time.time()
-		    reward += bandit[i].takeBestAction(act)
-		    t3 = time.time()
-		    print 't2-t1',t2-t1
-		    print 't3-t2',t3-t2
-		ave_rewards[ind][t] = reward.eval()
-		best_actions[ind][t] = action.eval()
-	    best_actions[ind] /= nbandit
-	    ave_rewards[ind] /= nbandit
-	t_end = time.time()
-	print 'consume time:',t_end-t_start
 		    
+'''
 	for eps, ba in zip(epsilon, best_actions):
 	    plt.plot(ba, label='epsilon='+str(eps))
 	plt.xlabel('steps')
@@ -169,3 +169,4 @@ if __name__ == '__main__':
 	plt.ylabel('average reward')
 	plt.legend()
 	plt.show()
+'''
