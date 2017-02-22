@@ -24,24 +24,35 @@ import numpy as np
 import matplotlib.pyplot as plt
 import time
 
-## 问题回顾，一共十个arm，一共n个bandit，一共t次实验，并且分成多个epsilon来实验
-#每个bandit的每个arm都有一个真实价值,并且单个bandit的价值是服从稳定的分布
-#每个bandit都有一个best action, epoch, meanReward, actionCount
-#一共有nbandit*epsilon*times个随机数与epsilon进行比较
-config = tf.ConfigProto(graph_options=tf.GraphOptions(optimizer_options=tf.OptimizerOptions(opt_level=tf.OptimizerOptions.L0)))
-tf.reset_default_graph()
-
 epsilons = tf.Variable([0, 0.05, 0.15, 0.20])
 epsilon = 4
-times = 5
+times = 4
 nbandit = 5
 arms = 10
 stepSize = 0.1
 softmax = True
 sampleAverage = True
 
+## 问题回顾，一共十个arm，一共n个bandit，一共t次实验，并且分成多个epsilon来实验
+#每个bandit的每个arm都有一个真实价值,并且单个bandit的价值是服从稳定的分布
+#每个bandit都有一个best action, epoch, meanReward, actionCount
+#一共有nbandit*epsilon*times个随机数与epsilon进行比较
+def visualize(epsilons, fr, fo):
+    for eps, ba in zip(epsilons, fo):
+	plt.plot(ba, label='epsilon='+str(eps))
+    plt.xlabel('steps')
+    plt.ylabel('optimal action %')
+    plt.legend()
+    plt.show()
+    for eps, ar in zip(epsilons, fr):
+        plt.plot(ar, label='epsilon='+str(eps))
+    plt.xlabel('steps')
+    plt.ylabel('average reward')
+    plt.legend()
+    plt.show()
 
-all_random_numbers = tf.get_variable('all_random_numbers', shape=[epsilon, times, nbandit], initializer=tf.random_uniform_initializer(), dtype=tf.float32)
+
+all_random_numbers = tf.get_variable('all_random_numbers', shape=[epsilon, nbandit, times], initializer=tf.random_uniform_initializer(), dtype=tf.float32)
 all_true_value = tf.get_variable('all_true_value', shape=[epsilon, nbandit, arms], initializer=tf.random_normal_initializer(), dtype=tf.float32)
 all_best_action = tf.cast(tf.argmax(all_true_value, axis=2), tf.int32)
 all_arms = tf.get_variable('all_arms', shape=[arms], initializer=tf.constant_initializer(range(arms)), dtype=tf.int32)
@@ -58,12 +69,12 @@ with tf.variable_scope('result'):
     final_reward = tf.get_variable('final_reward', shape=[epsilon*nbandit*times], initializer=tf.zeros_initializer(), dtype=tf.float32)
     final_optimal = tf.get_variable('final_optimal', shape=[epsilon*nbandit*times], initializer=tf.zeros_initializer(), dtype=tf.float32)
     
-sess = tf.Session(config=config)
-
 i1 = tf.Variable(range(epsilon),tf.int32)
 i2 = tf.Variable(range(nbandit),tf.int32)
 i3 = tf.Variable(range(times),tf.int32)
 
+sess = tf.Session()
+sess.run(tf.global_variables_initializer())
 def policy(index_epsilon, index_nbandit, index_time):
     # 1.get action
 
@@ -86,14 +97,16 @@ def policy(index_epsilon, index_nbandit, index_time):
             else:
 	        return tf.argmax(tf.gather_nd(estimated_value, [index_epsilon, index_nbandit]),axis=0) 
 
-    random = tf.gather_nd(all_random_numbers, [index_epsilon, index_time, index_nbandit]) 
+    random = tf.gather_nd(all_random_numbers, [index_epsilon, index_nbandit, index_time]) 
     eps = tf.gather_nd(epsilons, [index_epsilon])
     explore_or_not = tf.less(random, eps)
+
     action = tf.cond(explore_or_not, action_explore, softmax_or_not) 
 
     best_action = tf.gather_nd(all_best_action, [index_epsilon, index_nbandit])
 
     optimal = tf.equal(action, best_action)
+    optimal = tf.cast(optimal, tf.float32)
 
     index3 = index_epsilon*(index_nbandit*action)+index_nbandit*action+action
 
@@ -131,42 +144,32 @@ def policy(index_epsilon, index_nbandit, index_time):
         final_reward = tf.get_variable('final_reward', dtype=tf.float32)
         final_optimal = tf.get_variable('final_optimal', dtype=tf.float32)
 	final_reward = tf.scatter_update(final_reward, index1, reward)
-	final_optimal = tf.scatter_update(final_optimal, index1, tf.cast(optimal, tf.float32))
-    return final_reward, final_optimal 
+	final_optimal = tf.scatter_update(final_optimal, index1, optimal)
+        sess.run([final_reward, final_optimal])
+        return final_reward, final_optimal 
 
-sess.run(tf.global_variables_initializer())
-t1 = time.time()
-ind = 0
+
+idx = 0
 for i in range(epsilon):
     for j in range(nbandit):
         for k in range(times):
+	    print idx
 	    fr, fo = policy(tf.gather(i1,i),tf.gather(i2,j),tf.gather(i3,k))
-	    ind +=1
-	    
-t2 = time.time()
-print sess.run(fr)
-print sess.run(fo)
-print t2-t1
+	    idx += 1
 	    
 
+with tf.variable_scope('result', reuse=True):
+    fr = tf.get_variable('final_reward', dtype=tf.float32)
+    fo = tf.get_variable('final_optimal', dtype=tf.float32)
+    fr = tf.reshape(fr,[epsilon, nbandit, times])
+    fo = tf.reshape(fo,[epsilon, nbandit, times])
 
+    fr = tf.reduce_mean(fr, 1)
+    fo = tf.reduce_mean(fo, 1)
 
+    fr, fo, epsilons = sess.run([fr, fo, epsilons])
+    print fr
+    print fo
 
+    visualize(epsilons, fr, fo)
 
-	
-		    
-'''
-	for eps, ba in zip(epsilon, best_actions):
-	    plt.plot(ba, label='epsilon='+str(eps))
-	plt.xlabel('steps')
-	plt.ylabel('optimal action %')
-	plt.legend()
-	plt.show()
-
-	for eps, ar in zip(epsilon, ave_rewards):
-	    plt.plot(ar, label='epsilon='+str(eps))
-	plt.xlabel('steps')
-	plt.ylabel('average reward')
-	plt.legend()
-	plt.show()
-'''
