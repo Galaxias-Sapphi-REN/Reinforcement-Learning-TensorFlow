@@ -26,7 +26,7 @@ import time
 
 epsilons = tf.Variable([0, 0.05, 0.15, 0.20])
 epsilon = 4
-times = 4
+times = 30
 nbandit = 5
 arms = 10
 stepSize = 0.1
@@ -52,6 +52,7 @@ def visualize(epsilons, fr, fo):
     plt.show()
 
 
+
 all_random_numbers = tf.get_variable('all_random_numbers', shape=[epsilon, nbandit, times], initializer=tf.random_uniform_initializer(), dtype=tf.float32)
 all_true_value = tf.get_variable('all_true_value', shape=[epsilon, nbandit, arms], initializer=tf.random_normal_initializer(), dtype=tf.float32)
 all_best_action = tf.cast(tf.argmax(all_true_value, axis=2), tf.int32)
@@ -74,6 +75,7 @@ i2 = tf.Variable(range(nbandit),tf.int32)
 i3 = tf.Variable(range(times),tf.int32)
 
 sess = tf.Session()
+
 sess.run(tf.global_variables_initializer())
 def policy(index_epsilon, index_nbandit, index_time):
     # 1.get action
